@@ -124,6 +124,11 @@ This uploads the bundled sample docs (OpenShift AI overview, SR guide) to MinIO 
 
 ## Deploy to OpenShift
 
+For the mixed two-GPU/one-CPU profile, first follow
+[OpenShift AI and KServe installation](docs/OPENSHIFT_AI_KSERVE.md), then
+[G7 CPU Operator integration](docs/G7_CPU_OPERATOR.md).
+
+
 ### 1. Create namespace and set HF token
 
 ```bash

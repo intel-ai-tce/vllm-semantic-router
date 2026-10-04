@@ -3,6 +3,7 @@
 
 import os
 import sys
+from pathlib import Path
 import yaml
 
 NODE = os.environ.get("CPU_OPERATOR_NODE", "").strip()
@@ -38,4 +39,42 @@ for doc in docs:
     selector["cpu.example.com/placement-ready"] = "true"
     selector["cpu.example.com/node-class"] = "mixed-cpu-amx-gpu"
 
-yaml.safe_dump_all(docs, sys.stdout, sort_keys=False, explicit_start=True)
+# llm-service 0.5.9 uses fixed names across aliases. Collapse identical
+# resources, but never silently choose between conflicting definitions.
+namespace = os.environ.get("TARGET_NAMESPACE", "vllm-semantic-router")
+def identity(doc):
+    meta = doc.get("metadata") or {}
+    return (doc.get("apiVersion"), doc.get("kind"),
+            meta.get("namespace") or namespace, meta.get("name"))
+
+unique = {}
+for doc in docs:
+    if not isinstance(doc, dict):
+        continue
+    key = identity(doc)
+    if key in unique and unique[key] != doc:
+        raise SystemExit(f"Conflicting duplicate Helm resource: {key}")
+    unique[key] = doc
+
+# The dependency's lookup guards suppress these objects on an upgrade.
+# Retain only objects already tracked by this release, so Helm does not
+# delete them merely because lookup found them in the cluster.
+previous = os.environ.get("CPU_OPERATOR_PREVIOUS_MANIFEST", "")
+if previous:
+    for doc in yaml.safe_load_all(Path(previous).read_text()):
+        if not isinstance(doc, dict):
+            continue
+        key = identity(doc)
+        if (doc.get("kind"), (doc.get("metadata") or {}).get("name")) not in {
+            ("Secret", "huggingface-secret"),
+            ("ConfigMap", "vllm-chat-templates"),
+        }:
+            continue
+        if key not in unique:
+            if doc.get("kind") == "Secret" and os.environ.get("HF_TOKEN"):
+                import base64
+                doc.setdefault("data", {})["HF_TOKEN"] = base64.b64encode(
+                    os.environ["HF_TOKEN"].encode()).decode()
+            unique[key] = doc
+
+yaml.safe_dump_all(unique.values(), sys.stdout, sort_keys=False, explicit_start=True)

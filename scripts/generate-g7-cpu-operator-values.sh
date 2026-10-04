@@ -21,6 +21,9 @@ TARGET_NAMESPACE="${TARGET_NAMESPACE:-vllm-semantic-router}"
 OUTPUT="${OUTPUT:-/tmp/values-g7-cpu-operator.generated.yaml}"
 CPU_HEADROOM_PER_NUMA="${CPU_HEADROOM_PER_NUMA:-1}"
 EXTRA_SHARED_CPU_HEADROOM="${EXTRA_SHARED_CPU_HEADROOM:-4}"
+# Conservative injected agent + proxy CPU allowance for each of three models.
+# Override after inspecting the installed OpenShift AI sidecar configuration.
+MODEL_SIDECAR_CPU_M="${MODEL_SIDECAR_CPU_M:-1200}"
 GPU_MEMORY="${GPU_MEMORY:-32Gi}"
 CPU_MEMORY="${CPU_MEMORY:-64Gi}"
 RESEARCH_GPU_CPU_REQUEST="${RESEARCH_GPU_CPU_REQUEST:-}"
@@ -39,6 +42,8 @@ PY
 
 [[ "${CPU_HEADROOM_PER_NUMA}" =~ ^[0-9]+$ ]] || fail "CPU_HEADROOM_PER_NUMA must be a non-negative integer"
 [[ "${EXTRA_SHARED_CPU_HEADROOM}" =~ ^[0-9]+$ ]] || fail "EXTRA_SHARED_CPU_HEADROOM must be a non-negative integer"
+
+[[ "${MODEL_SIDECAR_CPU_M}" =~ ^[0-9]+$ ]] || fail "MODEL_SIDECAR_CPU_M must be non-negative millicores"
 
 if [[ -z "${NODE}" ]]; then
   NODE="$(oc get nodes -l 'cpu.example.com/node-class=mixed-cpu-amx-gpu,cpu.example.com/placement-ready=true' \
@@ -66,7 +71,7 @@ python3 - \
   "${NODE}" "${TARGET_NAMESPACE}" "${CPU_HEADROOM_PER_NUMA}" \
   "${EXTRA_SHARED_CPU_HEADROOM}" "${GPU_MEMORY}" "${CPU_MEMORY}" \
   "${RESEARCH_GPU_CPU_REQUEST}" "${RAG_GPU_CPU_REQUEST}" "${REPLACE_POD_REGEX}" \
-  "${OUTPUT}" <<'PY'
+  "${OUTPUT}" "${MODEL_SIDECAR_CPU_M}" <<'PY'
 import json
 import math
 import re
@@ -77,9 +82,10 @@ import yaml
 (
     placement_path, topology_path, node_path, pods_path, node, target_namespace,
     cpu_headroom_per_numa, extra_shared_headroom, gpu_memory, cpu_memory,
-    research_override, rag_override, replace_regex, output_path,
+    research_override, rag_override, replace_regex, output_path, model_sidecar_cpu_m,
 ) = sys.argv[1:]
 
+model_sidecar_cpu_m = int(model_sidecar_cpu_m)
 cpu_headroom_per_numa = int(cpu_headroom_per_numa)
 extra_shared_headroom = int(extra_shared_headroom)
 placement = yaml.safe_load(Path(placement_path).read_text()) or {}
@@ -221,6 +227,7 @@ scheduler_budget_m = (
     alloc_cpu_m
     - existing_cpu_m
     - gpu_total * 1000
+    - 3 * model_sidecar_cpu_m
     - extra_shared_headroom * 1000
 )
 scheduler_cap = scheduler_budget_m // 1000
@@ -275,6 +282,7 @@ print(f"[INFO] cpuPodCPUSetCapacity={len(cpu_set)} NUMA={numa_count} threadsPerC
 print(f"[INFO] existingCPURequests={existing_cpu_m}m extraSharedHeadroom={extra_shared_headroom}", file=sys.stderr)
 if excluded:
     print(f"[INFO] excludedReplacementPods={','.join(excluded)}", file=sys.stderr)
+print(f"[INFO] modelSidecarCPUAllowance={3 * model_sidecar_cpu_m}m", file=sys.stderr)
 print(f"[INFO] Xeon policyTarget={policy_target} schedulerCap={scheduler_cap} cpuRequest={cpu_request}", file=sys.stderr)
 print(f"[INFO] wrote {output_path}", file=sys.stderr)
 PY
