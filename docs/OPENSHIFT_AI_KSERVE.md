@@ -293,3 +293,77 @@ oc get events -n "$NS" --field-selector type=Warning --sort-by=.lastTimestamp
 - [Kubernetes node-pressure eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)
 - [AWS EBS filesystem expansion](https://docs.aws.amazon.com/ebs/latest/userguide/recognize-expanded-volume-linux.html)
 - [MinIO source distribution](https://github.com/minio/minio)
+
+## Guaranteed QoS setup for the single-worker G7 profile
+
+The CPU Operator enables static CPU management on the worker. Every container
+in a predictor pod must have matching CPU and memory requests/limits for the
+pod to be Guaranteed. KServe's injected agent and proxy count too. The G7
+values generator now checks the installed defaults and reads their combined
+CPU requests instead of assuming 1200m. Additional injected containers can
+still prevent Guaranteed QoS; the post-deployment check catches that.
+
+Run the read-only check inside the toolbox before deployment:
+
+```bash
+python3 scripts/kserve-guaranteed-qos.py
+```
+
+If it reports unequal resources, explicitly apply the lab configuration:
+
+```bash
+python3 scripts/kserve-guaranteed-qos.py --apply \
+  --backup /tmp/kserve-before-guaranteed.json
+./scripts/deploy-g7-cpu-operator.sh
+```
+
+The helper preserves limits and other settings, raises agent/proxy requests to
+those limits, and sets `opendatahub.io/managed=false` in the same patch. The
+backup path must be new; preserve that file for rollback. This changes defaults
+for other KServe workloads in the cluster and takes manual ownership of this
+ConfigMap. Review it after OpenShift AI upgrades. Existing pods retain their
+old resources until recreated. The helper never deletes pods or disables auth.
+
+The G7 post-renderer sets `spec.predictor.deploymentStrategy` to RollingUpdate
+with `maxSurge: 0` and `maxUnavailable: 1` for its three models. This allows an
+update without a third GPU or a second 25-CPU model replica. Updating a model
+briefly interrupts its inference service; Helm may update multiple models at
+once. The deployment script checks CRD support first and verifies the resulting
+Deployment rollouts, Ready/Guaranteed pods, and exclusive CPU Manager checkpoint
+assignments. The default three-GPU profile without `CPU_OPERATOR_NODE` retains
+its existing rollout behavior.
+
+For an installed release, changing only the ConfigMap does not recreate model
+pods. Reconcile each InferenceService once with a predictor annotation, then
+wait for its rollout before proceeding to the next model. If the installed
+KServe cannot accept `deploymentStrategy`, inspect the replacement pod's QoS
+and scheduling events, then delete only that model's old pod to release its
+GPU/CPU capacity. Do not repeatedly annotate, force-delete pods, or edit
+controller-owned Deployments as a persistent fix.
+
+```bash
+oc annotate inferenceservice granite-3-1-2b-instruct \
+  -n vllm-semantic-router cpu-qos-reconcile="$(date -u +%Y%m%dT%H%M%SZ)" --overwrite
+oc rollout status deployment/granite-3-1-2b-instruct-predictor \
+  -n vllm-semantic-router --timeout=900s
+# Repeat sequentially for granite-3-1-8b-instruct and qwen3-8b.
+
+python3 scripts/kserve-guaranteed-qos.py --verify vllm-semantic-router --node "$NODE"
+LIVE=1 VIEW=both bash packages/cpu-operator/scripts/show-pod-cpus-grouped.sh \
+  "$NODE" 'vllm-semantic-router/.*(qwen3-8b|granite-3-1).*predictor'
+```
+
+The checkpoint check verifies exclusive counts and non-overlap; the grouped
+report additionally verifies live affinity. Actual CPU IDs may differ from
+`gpuPodCPUSet`/`cpuPodCPUSet`, which are reference ranges, not enforced pools.
+An integer one-CPU agent gets its own exclusive CPU. A fractional proxy remains
+in the shared pool even when its pod is Guaranteed.
+
+Restore only the sidecar entries and original management annotation if needed:
+
+```bash
+python3 scripts/kserve-guaranteed-qos.py --restore /tmp/kserve-before-guaranteed.json
+```
+
+Restoration also requires replacement pods to take effect. Re-enabling operator
+management allows the operator to reconcile this ConfigMap again.

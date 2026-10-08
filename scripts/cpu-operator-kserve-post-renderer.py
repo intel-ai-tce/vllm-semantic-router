@@ -33,6 +33,11 @@ for doc in docs:
 
     predictor = doc.setdefault("spec", {}).setdefault("predictor", {})
     if NODE:
+        # Single-worker profile has no spare GPU/CPU for a surge replica.
+        predictor["deploymentStrategy"] = {
+            "type": "RollingUpdate",
+            "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1},
+        }
         selector = predictor.setdefault("nodeSelector", {})
         selector["kubernetes.io/hostname"] = NODE
         selector["cpu.example.com/placement-ready"] = "true"

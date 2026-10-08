@@ -48,6 +48,10 @@ for variable in HELM_CONFIG_HOME HELM_CACHE_HOME HELM_DATA_HOME; do
 done
 helm repo add ai-architecture-charts https://rh-ai-quickstart.github.io/ai-architecture-charts --force-update
 
+oc explain inferenceservice.spec.predictor.deploymentStrategy >/dev/null \
+  || fail "Installed KServe lacks predictor.deploymentStrategy; use the sequential update procedure in docs/OPENSHIFT_AI_KSERVE.md"
+echo "[INFO] G7 model updates use maxSurge=0/maxUnavailable=1; each updated model briefly stops serving"
+
 export NODE TARGET_NAMESPACE OUTPUT="${GENERATED_VALUES}"
 "${ROOT_DIR}/scripts/generate-g7-cpu-operator-values.sh"
 
@@ -94,3 +98,12 @@ helm upgrade --install "${RELEASE}" "${CHART}" \
 echo
 oc get inferenceservice -n "${TARGET_NAMESPACE}" 2>/dev/null || true
 oc get pods -n "${TARGET_NAMESPACE}" -o wide
+
+for model in granite-3-1-2b-instruct granite-3-1-8b-instruct qwen3-8b; do
+  oc wait --for=condition=Ready "inferenceservice/${model}" -n "${TARGET_NAMESPACE}" \
+    --timeout="${MODEL_READY_TIMEOUT:-900s}" || fail "${model} is not ready; inspect pod resources/events"
+  oc rollout status "deployment/${model}-predictor" -n "${TARGET_NAMESPACE}" \
+    --timeout="${MODEL_READY_TIMEOUT:-900s}" || fail "${model} deployment rollout did not finish"
+done
+python3 "${ROOT_DIR}/scripts/kserve-guaranteed-qos.py" --verify "${TARGET_NAMESPACE}" --node "${NODE}"
+echo "[INFO] Verify live CPU affinity with packages/cpu-operator/scripts/show-pod-cpus-grouped.sh; see docs/OPENSHIFT_AI_KSERVE.md"

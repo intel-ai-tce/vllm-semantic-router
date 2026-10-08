@@ -21,9 +21,8 @@ TARGET_NAMESPACE="${TARGET_NAMESPACE:-vllm-semantic-router}"
 OUTPUT="${OUTPUT:-/tmp/values-g7-cpu-operator.generated.yaml}"
 CPU_HEADROOM_PER_NUMA="${CPU_HEADROOM_PER_NUMA:-1}"
 EXTRA_SHARED_CPU_HEADROOM="${EXTRA_SHARED_CPU_HEADROOM:-4}"
-# Conservative injected agent + proxy CPU allowance for each of three models.
-# Override after inspecting the installed OpenShift AI sidecar configuration.
-MODEL_SIDECAR_CPU_M="${MODEL_SIDECAR_CPU_M:-1200}"
+# Read installed agent/proxy requests; the helper also checks Guaranteed eligibility.
+MODEL_SIDECAR_CPU_M="${MODEL_SIDECAR_CPU_M:-}"
 GPU_MEMORY="${GPU_MEMORY:-32Gi}"
 CPU_MEMORY="${CPU_MEMORY:-64Gi}"
 RESEARCH_GPU_CPU_REQUEST="${RESEARCH_GPU_CPU_REQUEST:-}"
@@ -43,7 +42,11 @@ PY
 [[ "${CPU_HEADROOM_PER_NUMA}" =~ ^[0-9]+$ ]] || fail "CPU_HEADROOM_PER_NUMA must be a non-negative integer"
 [[ "${EXTRA_SHARED_CPU_HEADROOM}" =~ ^[0-9]+$ ]] || fail "EXTRA_SHARED_CPU_HEADROOM must be a non-negative integer"
 
+SIDECAR_CPU_M="$(python3 "$(dirname -- "${BASH_SOURCE[0]}")/kserve-guaranteed-qos.py" \
+  --namespace "${KSERVE_NAMESPACE:-redhat-ods-applications}")"
+MODEL_SIDECAR_CPU_M="${MODEL_SIDECAR_CPU_M:-${SIDECAR_CPU_M}}"
 [[ "${MODEL_SIDECAR_CPU_M}" =~ ^[0-9]+$ ]] || fail "MODEL_SIDECAR_CPU_M must be non-negative millicores"
+(( 10#${MODEL_SIDECAR_CPU_M} >= SIDECAR_CPU_M )) || fail "Sidecar allowance cannot be lower than installed requests"
 
 if [[ -z "${NODE}" ]]; then
   NODE="$(oc get nodes -l 'cpu.example.com/node-class=mixed-cpu-amx-gpu,cpu.example.com/placement-ready=true' \
