@@ -212,6 +212,9 @@ GPU-versus-CPU partition assignment by themselves.
 
 ## 5. Helm, images and persistent volumes
 
+For the router schema and API fixes, immutable image references, private registry
+credentials and safe upgrades, see [Deployment repair and upgrades](DEPLOYMENT_REPAIR.md).
+
 If HOME is read-only, set writable Helm paths in every shell used for Helm:
 
 ```bash

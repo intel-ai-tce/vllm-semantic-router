@@ -7,8 +7,6 @@ from pathlib import Path
 import yaml
 
 NODE = os.environ.get("CPU_OPERATOR_NODE", "").strip()
-if not NODE:
-    raise SystemExit("CPU_OPERATOR_NODE must be set")
 
 TARGETS = {
     "qwen3-8b",
@@ -29,15 +27,16 @@ for doc in docs:
 
     metadata = doc.setdefault("metadata", {})
     annotations = metadata.setdefault("annotations", {})
-    if DISABLE_ISTIO:
+    if NODE and DISABLE_ISTIO:
         annotations["sidecar.istio.io/inject"] = "false"
         annotations["sidecar.istio.io/rewriteAppHTTPProbers"] = "false"
 
     predictor = doc.setdefault("spec", {}).setdefault("predictor", {})
-    selector = predictor.setdefault("nodeSelector", {})
-    selector["kubernetes.io/hostname"] = NODE
-    selector["cpu.example.com/placement-ready"] = "true"
-    selector["cpu.example.com/node-class"] = "mixed-cpu-amx-gpu"
+    if NODE:
+        selector = predictor.setdefault("nodeSelector", {})
+        selector["kubernetes.io/hostname"] = NODE
+        selector["cpu.example.com/placement-ready"] = "true"
+        selector["cpu.example.com/node-class"] = "mixed-cpu-amx-gpu"
 
 # llm-service 0.5.9 uses fixed names across aliases. Collapse identical
 # resources, but never silently choose between conflicting definitions.
